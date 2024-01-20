@@ -1,49 +1,111 @@
-from flask import Flask, render_template, request, redirect, url_for
-from google_auth_oauthlib.flow import InstalledAppFlow
+import numpy as np
+import pandas as pd
+import streamlit as st
 from googleapiclient.discovery import build
+import random
 
-app = Flask(__name__)
+api_key = 'AIzaSyCEVvQd8_9EwmKnYoOhfxTVe8hQto9Tl_Q'
 
-# Set up YouTube API credentials
-CLIENT_SECRETS_FILE = 'client_secret.json'
-API_NAME = 'youtube'
-API_VERSION = 'v3'
-SCOPES = ['https://www.googleapis.com/auth/youtube.force-ssl']
+df = pd.read_csv("./filtered.csv")
+temp = []
+t = []
+for i in df["FilteredIngredients"]:
+    temp.extend(i.split(" "))
+    t.append(i.split(" "))
+cho = set(temp)
+df["FilteredIngredients"] = t
 
-def get_authenticated_service():
-    flow = InstalledAppFlow.from_client_secrets_file(CLIENT_SECRETS_FILE, SCOPES)
-    credentials = flow.run_local_server(port=0)
-    return build(API_NAME, API_VERSION, credentials=credentials)
+def youtube_search(api_key, query, max_results=1):
+    youtube = build('youtube', 'v3', developerKey=api_key)
 
-@app.route('/')
-def index():
-    return render_template('index.html')
-
-@app.route('/search', methods=['POST'])
-def search():
-    ingredients = request.form.get('ingredients')
-
-    # Authenticate with YouTube API
-    youtube = get_authenticated_service()
-
-    # Search for recipes using user-provided ingredients
     search_response = youtube.search().list(
-        q=ingredients + " recipe",
+        q=query,
+        type='video',
         part='id,snippet',
-        maxResults=5
+        maxResults=max_results
     ).execute()
 
     videos = []
-    for item in search_response['items']:
-        video_id = item['id']['videoId']
-        title = item['snippet']['title']
-        videos.append({'title': title, 'video_id': video_id})
+    for search_result in search_response.get('items', []):
+        video_id = search_result['id']['videoId']
+        video_response = youtube.videos().list(
+            id=video_id,
+            part='snippet,statistics'
+        ).execute()
 
-    return render_template('results.html', videos=videos)
+        video_info = video_response['items'][0]['snippet']
+        video_statistics = video_response['items'][0]['statistics']
 
-@app.route('/watch/<video_id>')
-def watch(video_id):
-    return redirect(f'https://www.youtube.com/watch?v={video_id}')
+        video = {
+            'title': video_info['title'],
+            'views': video_statistics['viewCount'],
+            'link': f'https://www.youtube.com/watch?v={video_id}',
+            'thumbnail': video_info['thumbnails']['default']['url']
+        }
 
-if __name__ == '__main__':
-    app.run(debug=True)
+        videos.append(video)
+
+    return videos
+
+def selection_page():
+    global options
+    st.title("Selection Page")
+    options = st.multiselect("Select Available Ingredients: ", cho)
+    if st.button("Confirm"):
+        # Finding top 5 matches
+        df['MatchCount'] = df['FilteredIngredients'].apply(lambda x: len(set(x) & set(options)))
+        top_matches = df.nlargest(5, 'MatchCount')
+
+        st.markdown("---")
+        st.markdown("## Results")
+
+        for i in top_matches['TranslatedRecipeName']:
+            expander = st.expander(i)
+            with expander:
+                selected_rows = np.array(top_matches[top_matches['TranslatedRecipeName'] == i])
+
+                st.write(f"Time to cook: {selected_rows[0][1]} mins")
+                st.write(f"Servings: {selected_rows[0][2]}")
+                st.write(f"Cuisine: {selected_rows[0][3]}")
+                st.write(f"Course: {selected_rows[0][5]}")
+                st.write(f"URL: {selected_rows[0][6]}")
+
+                search_query = f"how to make {str(i).replace("_", " ")} at home"
+                results = youtube_search(api_key, search_query)
+
+                st.write("Youtube: ")
+
+                for result in results:
+                    st.write(f"Title: {result['title']}")
+                    st.write(f"Views: {result['views']}")
+                    st.write(f"Link: {result['link']}")
+
+        recommendation = [random.choice(df['TranslatedRecipeName']) for _ in range(5)]
+
+        st.markdown("---")
+        st.markdown("## Recommendations:")
+
+        for i in recommendation:
+            expander = st.expander(i)
+            with expander:
+                selected_rows = np.array(df[df['TranslatedRecipeName'] == i])
+
+                st.write(f"Time to cook: {selected_rows[0][1]} mins")
+                st.write(f"Servings: {selected_rows[0][2]}")
+                st.write(f"Cuisine: {selected_rows[0][3]}")
+                st.write(f"Course: {selected_rows[0][5]}")
+                st.write(f"URL: {selected_rows[0][6]}")
+
+                search_query = f"how to make {str(i).replace("_", " ")} at home"
+                results = youtube_search(api_key, search_query)
+
+                st.write("Youtube: ")
+
+                for result in results:
+                    st.write(f"Title: {result['title']}")
+                    st.write(f"Views: {result['views']}")
+                    st.write(f"Link: {result['link']}")
+
+            
+if __name__ == "__main__":
+    selection_page()
